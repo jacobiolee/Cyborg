@@ -188,6 +188,21 @@ class NotificationMirror:
             selected = group + selected
         return selected
 
+    def content_key(self, now: float | None = None):
+        """Identity of what is on screen, ignoring how old it looks.
+
+        Two screens with the same content key differ only in their age labels.
+        `PushPolicy` uses this to tell a real change (arrival, expiry) from the
+        labels merely ticking over.
+        """
+        now = self.now() if now is None else now
+        return (
+            tuple((n.received_at, n.text) for n in self.live(now)),
+            self.total_seen,
+            self.profile.columns,
+            self.profile.rows,
+        )
+
     def header(self, now: float | None = None) -> str:
         now = self.now() if now is None else now
         live = len(self.live(now))
@@ -197,3 +212,51 @@ class NotificationMirror:
         """The payload sent to the device: header, then one line per row."""
         now = self.now() if now is None else now
         return "\n".join([self.header(now), *self.body_lines(now)])
+
+
+class PushPolicy:
+    """Decides when a screen is worth sending to the device.
+
+    Age labels tick every second, so naively pushing whenever the rendered
+    screen differs means a redraw per second per live notification. Against the
+    emulator that is free; over real BLE it is radio time and battery for a
+    cosmetic change.
+
+    So: a content change (arrival, expiry) pushes immediately, and label-only
+    drift is throttled to `refresh` seconds. Displayed ages are therefore up to
+    `refresh` seconds stale, which is the trade being made deliberately.
+
+    Set `refresh` to 0 to never push for labels alone -- ages then freeze until
+    something real happens.
+    """
+
+    def __init__(self, refresh: float = 5.0) -> None:
+        self.refresh = refresh
+        self.content_pushes = 0
+        self.refresh_pushes = 0
+        self._last_key = None
+        self._last_push_at: float | None = None
+
+    @property
+    def pushes(self) -> int:
+        return self.content_pushes + self.refresh_pushes
+
+    def decide(self, mirror: NotificationMirror, now: float | None = None) -> str | None:
+        """Return the screen to send, or None to stay quiet."""
+        now = mirror.now() if now is None else now
+
+        key = mirror.content_key(now)
+        if key != self._last_key:
+            self._last_key = key
+            self._last_push_at = now
+            self.content_pushes += 1
+            return mirror.screen(now)
+
+        if self.refresh <= 0 or not mirror.live(now):
+            # Nothing on screen can age, so there is nothing to refresh.
+            return None
+        if self._last_push_at is None or now - self._last_push_at >= self.refresh:
+            self._last_push_at = now
+            self.refresh_pushes += 1
+            return mirror.screen(now)
+        return None

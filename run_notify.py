@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 from halo_host import connect_emulator
-from halo_host.notifications import NotificationMirror
+from halo_host.notifications import NotificationMirror, PushPolicy
 from halo_host.sources import CommandSource, FileTailSource, IterableSource
 
 APP = Path(__file__).resolve().parent / "app" / "notify.lua"
@@ -55,6 +55,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ttl", type=float, default=60.0, help="seconds before a notification expires")
     parser.add_argument("--duration", type=float, default=8.0, help="how long to follow a live source")
     parser.add_argument("--interval", type=float, default=0.5, help="poll interval in seconds")
+    parser.add_argument(
+        "--refresh",
+        type=float,
+        default=5.0,
+        help="seconds between age-label-only redraws (0 disables them)",
+    )
     parser.add_argument("--out", default="notifications.png", help="where to write the PNG")
     args = parser.parse_args(argv)
 
@@ -67,16 +73,20 @@ def main(argv: list[str] | None = None) -> int:
     mirror = NotificationMirror(ttl=args.ttl)
     print(f"source: {source.name}  ttl={args.ttl}s  {mirror.profile.columns}x{mirror.profile.rows} chars")
 
+    policy = PushPolicy(refresh=args.refresh)
     live = bool(args.file or args.command)
     if live:
-        pushes = _follow(host, mirror, source, args)
+        _follow(host, mirror, policy, source, args)
     else:
-        pushes = _demo(host, mirror, source)
+        _demo(host, mirror, policy, source)
 
     path = device.display.to_png(args.out)
 
     print()
-    print(f"pushes      {pushes}")
+    print(
+        f"pushes      {policy.pushes} "
+        f"({policy.content_pushes} content, {policy.refresh_pushes} age-refresh)"
+    )
     print(f"notifications {len(mirror)} live / {mirror.total_seen} seen")
     print(f"show() calls {device.display.show_count}")
     print(f"acks        {host.app_data[-1] if host.app_data else '(none)'}")
@@ -88,36 +98,34 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _demo(host, mirror, source) -> int:
+def _demo(host, mirror, policy, source) -> None:
     """Replay canned lines on a synthetic clock so output is deterministic."""
     now = 1000.0
-    pushes = 0
     while not source.exhausted:
         for line in source.poll():
             mirror.ingest(line, source=source.name, now=now)
             print(f"  + {line[:60]}")
-        host.send_data(mirror.screen(now))
-        pushes += 1
+        screen = policy.decide(mirror, now)
+        if screen is not None:
+            host.send_data(screen)
         now += 7.0  # age the stack between pushes so the labels vary
-    return pushes
 
 
-def _follow(host, mirror, source, args) -> int:
-    """Poll a real source until --duration elapses, pushing on every change."""
+def _follow(host, mirror, policy, source, args) -> None:
+    """Poll a real source until --duration elapses.
+
+    The policy decides what actually goes out: arrivals and expiries go
+    immediately, age labels on a throttle.
+    """
     deadline = time.monotonic() + args.duration
-    last = None
-    pushes = 0
     try:
         while time.monotonic() < deadline:
             for line in source.poll():
                 mirror.ingest(line, source=source.name)
                 print(f"  + {line[:60]}")
-            screen = mirror.screen()
-            # Expiry changes the screen even with no new input, so compare.
-            if screen != last:
+            screen = policy.decide(mirror)
+            if screen is not None:
                 host.send_data(screen)
-                last = screen
-                pushes += 1
             time.sleep(args.interval)
     except KeyboardInterrupt:
         print("\ninterrupted")
@@ -125,7 +133,6 @@ def _follow(host, mirror, source, args) -> int:
         close = getattr(source, "close", None)
         if close:
             close()
-    return pushes
 
 
 if __name__ == "__main__":

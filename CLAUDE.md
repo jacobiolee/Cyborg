@@ -109,6 +109,7 @@ uv run python run_emulator.py  # render framebuffer.png
 uv run python run_notify.py    # notification mirror demo -> notifications.png
 uv run python run_notify.py --file /var/log/syslog --duration 20
 uv run python run_notify.py --command "journalctl -f -n0"
+uv run python run_notify.py --file app.log --refresh 0   # freeze age labels
 ```
 
 ## Conventions
@@ -132,6 +133,13 @@ uv run python run_notify.py --command "journalctl -f -n0"
   surface area to the very API this file flags as unverified. Text metrics live
   in `notifications.DisplayProfile` instead, where the guesswork is cheap to
   correct and does not touch the device.
+- **Don't push a screen just because it rendered differently.** Age labels tick
+  every second, so comparing rendered screens means a redraw per second per live
+  notification — free against the emulator, radio time and battery over real
+  BLE. `PushPolicy` splits the two cases: content changes (arrival, expiry,
+  detected via `NotificationMirror.content_key`) go out immediately, label-only
+  drift is throttled to `--refresh` seconds. Displayed ages are up to `refresh`
+  seconds stale; that is the deliberate trade.
 - **`DisplayProfile` duplicates the emulator's geometry on purpose.** The host
   must not import `halo_emulator`. Against real hardware those numbers would
   come from config. If you change `display.py`'s geometry or `font.ADVANCE`,

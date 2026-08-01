@@ -33,6 +33,11 @@ Notifications wrap to the display width, carry a relative age label, expire
 after `--ttl` seconds, and scroll oldest-first once the screen is full. All of
 that happens host-side; `app/notify.lua` only draws what it is handed.
 
+Arrivals and expiries are pushed to the glasses immediately. Age labels would
+otherwise force a redraw every second, so they are refreshed at most once per
+`--refresh` seconds (default 5, `0` to freeze them until something real
+happens).
+
 ## Layout
 
 | Path | What it is |

@@ -15,6 +15,7 @@ from halo_host import connect_emulator
 from halo_host.notifications import (
     DisplayProfile,
     NotificationMirror,
+    PushPolicy,
     format_age,
 )
 from halo_host.sources import FileTailSource, IterableSource
@@ -154,6 +155,112 @@ def test_empty_screen_is_just_the_header(mirror):
 def test_long_unbroken_token_does_not_overflow(mirror):
     mirror.ingest("x" * 100, now=0)
     assert all(len(line) <= TINY.columns for line in mirror.body_lines(now=0))
+
+
+# -- content key -------------------------------------------------------------
+
+
+def test_content_key_ignores_age(mirror):
+    mirror.ingest("steady", now=0)
+    assert mirror.content_key(now=0) == mirror.content_key(now=30)
+    # ...even though the rendered screen has changed.
+    assert mirror.screen(now=0) != mirror.screen(now=30)
+
+
+def test_content_key_changes_on_arrival(mirror):
+    mirror.ingest("first", now=0)
+    before = mirror.content_key(now=0)
+    mirror.ingest("second", now=0)
+    assert mirror.content_key(now=0) != before
+
+
+def test_content_key_changes_on_expiry(mirror):
+    mirror.ingest("transient", now=0)
+    before = mirror.content_key(now=0)
+    assert mirror.content_key(now=100) != before
+
+
+# -- push policy -------------------------------------------------------------
+
+
+def test_policy_pushes_the_initial_screen(mirror):
+    assert PushPolicy(refresh=5).decide(mirror, now=0) is not None
+
+
+def test_policy_stays_quiet_when_nothing_changed(mirror):
+    policy = PushPolicy(refresh=5)
+    mirror.ingest("hello", now=0)
+
+    assert policy.decide(mirror, now=0) is not None
+    assert policy.decide(mirror, now=1) is None
+    assert policy.decide(mirror, now=4.9) is None
+    assert policy.content_pushes == 1
+    assert policy.refresh_pushes == 0
+
+
+def test_policy_refreshes_ages_after_the_interval(mirror):
+    policy = PushPolicy(refresh=5)
+    mirror.ingest("hello", now=0)
+    policy.decide(mirror, now=0)
+
+    assert policy.decide(mirror, now=5) is not None
+    assert policy.refresh_pushes == 1
+    # The refresh resets the clock, so the next one is another 5s out.
+    assert policy.decide(mirror, now=8) is None
+    assert policy.decide(mirror, now=10) is not None
+
+
+def test_policy_pushes_arrivals_immediately(mirror):
+    policy = PushPolicy(refresh=60)
+    mirror.ingest("first", now=0)
+    policy.decide(mirror, now=0)
+
+    mirror.ingest("second", now=1)
+    assert policy.decide(mirror, now=1) is not None, "arrival must not wait for refresh"
+    assert policy.content_pushes == 2
+    assert policy.refresh_pushes == 0
+
+
+def test_policy_pushes_expiry_immediately(mirror):
+    policy = PushPolicy(refresh=3600)
+    mirror.ingest("transient", now=0)
+    policy.decide(mirror, now=0)
+
+    # ttl is 60s, so at t=61 the notification is gone -- a content change.
+    assert policy.decide(mirror, now=61) is not None
+    assert policy.content_pushes == 2
+
+
+def test_refresh_zero_disables_age_pushes():
+    # ttl=None so that nothing expires: this isolates the label-only case.
+    # With a ttl the expiry would be a content change and *should* push.
+    m = NotificationMirror(profile=TINY, ttl=None)
+    policy = PushPolicy(refresh=0)
+    m.ingest("hello", now=0)
+    policy.decide(m, now=0)
+
+    assert policy.decide(m, now=10_000) is None
+    assert policy.refresh_pushes == 0
+
+
+def test_policy_does_not_refresh_an_empty_screen(mirror):
+    policy = PushPolicy(refresh=1)
+    policy.decide(mirror, now=0)  # initial empty screen
+
+    assert policy.decide(mirror, now=100) is None, "nothing on screen can age"
+    assert policy.refresh_pushes == 0
+
+
+def test_policy_cuts_traffic_versus_naive_comparison(mirror):
+    """The regression this policy exists to prevent."""
+    mirror.ingest("steady", now=0)
+
+    naive = len({mirror.screen(now=t) for t in range(0, 60)})
+    policy = PushPolicy(refresh=5)
+    throttled = sum(policy.decide(mirror, now=t) is not None for t in range(0, 60))
+
+    assert naive > 50, "age labels really do change every second"
+    assert throttled <= 13, f"expected roughly 60/5 pushes, got {throttled}"
 
 
 # -- sources -----------------------------------------------------------------
