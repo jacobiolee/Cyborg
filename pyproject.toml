@@ -1,0 +1,25 @@
+[project]
+name = "cyborg"
+version = "0.1.0"
+description = "Emulator-first host app for Brilliant Labs Halo smart glasses"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    # lupa ships several bundled Lua runtimes; we import lupa.lua53 explicitly
+    # so the emulator matches the Lua 5.3 VM described for the device.
+    "lupa>=2.0",
+]
+
+[project.optional-dependencies]
+tests = ["pytest>=8.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/halo_host", "src/halo_emulator"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
