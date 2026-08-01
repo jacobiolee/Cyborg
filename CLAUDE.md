@@ -36,8 +36,8 @@ Specifically:
 |---|---|---|
 | `src/halo_host/brilliant_msg.py` | `upload_frame_app` | Frame-era, unverified |
 | `src/halo_host/brilliant_msg.py` | `start_frame_app` | Frame-era, unverified |
-| `app/main.lua` | `frame.display.clear/text/show` | Frame-era, unverified |
-| `app/main.lua` | `frame.bluetooth.send/receive_callback` | Frame-era, unverified |
+| `app/main.lua`, `app/notify.lua` | `frame.display.clear/text/show` | Frame-era, unverified |
+| `app/main.lua`, `app/notify.lua` | `frame.bluetooth.send/receive_callback` | Frame-era, unverified |
 | `app/main.lua` | `frame.sleep`, `frame.time.utc` | Frame-era, unverified |
 
 The `frame.*` table is defined in exactly one place —
@@ -79,18 +79,26 @@ Do not port emulator numbers into hardware-facing code as if they were spec.
 ## Layout
 
 ```
-app/main.lua              Lua app that runs on the glasses
-run_emulator.py           Boot emulator, run the app, write framebuffer.png
+app/main.lua              Minimal echo app — the smoke-test fixture
+app/notify.lua            Notification mirror — draws a screen sent by the host
+run_emulator.py           Boot emulator, run main.lua, write framebuffer.png
+run_notify.py             Run the notification mirror, write notifications.png
 src/halo_host/
   host.py                 HaloHost: upload/start app, exchange messages
   brilliant_msg.py        Framing + the Frame-era placeholder helpers
+  notifications.py        Notification model: wrapping, expiry, truncation
+  sources.py              Where notifications come from (file, command, canned)
 src/halo_emulator/        EXPERIMENTAL — see above
   device.py               Lua 5.3 VM, filesystem, message dispatch
   display.py              RGB framebuffer + dependency-free PNG writer
   transport.py            BLE stand-in with MTU fragmentation
   font.py                 Embedded 5x7 bitmap font
-tests/test_smoke.py       End-to-end smoke tests
+tests/test_smoke.py       End-to-end smoke tests for the baseline loop
+tests/test_notifications.py  Notification mirror tests
 ```
+
+Both Lua apps are live. `main.lua` is kept as the minimal protocol exerciser
+that the smoke tests run against; `notify.lua` is the real app.
 
 ## Commands
 
@@ -98,6 +106,9 @@ tests/test_smoke.py       End-to-end smoke tests
 uv sync --extra tests        # install (creates .venv)
 uv run pytest -q             # test suite
 uv run python run_emulator.py  # render framebuffer.png
+uv run python run_notify.py    # notification mirror demo -> notifications.png
+uv run python run_notify.py --file /var/log/syslog --duration 20
+uv run python run_notify.py --command "journalctl -f -n0"
 ```
 
 ## Conventions
@@ -115,7 +126,17 @@ uv run python run_emulator.py  # render framebuffer.png
   `to_png` renders the visible buffer, so a partial frame never reaches disk.
 - **No third-party runtime deps beyond lupa.** The PNG writer and font are
   hand-rolled to keep the emulator installable anywhere. Don't add Pillow.
-- `framebuffer.png` is generated output and is gitignored.
+- **App logic lives on the host, not in Lua.** `notify.lua` receives a fully
+  prepared screen — wrapped, expired, truncated — and only draws it. Wrapping
+  in Lua would have meant inventing a `frame.display.text_width` call, adding
+  surface area to the very API this file flags as unverified. Text metrics live
+  in `notifications.DisplayProfile` instead, where the guesswork is cheap to
+  correct and does not touch the device.
+- **`DisplayProfile` duplicates the emulator's geometry on purpose.** The host
+  must not import `halo_emulator`. Against real hardware those numbers would
+  come from config. If you change `display.py`'s geometry or `font.ADVANCE`,
+  change `DisplayProfile` to match.
+- `framebuffer.png` and `notifications.png` are generated output and gitignored.
 
 ## Testing
 
@@ -124,3 +145,9 @@ on a real Lua 5.3 VM → draw → talk back. Display assertions deliberately che
 "something was drawn" and "the checksum changed", **not** exact pixels — the
 layout is expected to churn, and pinning it would make every visual tweak a test
 failure.
+
+`tests/test_notifications.py` covers the mirror. Most of it is unit-level and
+uses a deliberately tiny `DisplayProfile` (10x3 characters) so wrapping and
+truncation are easy to reason about. Pass an explicit `now=` to every call in a
+test — the mirror's real clock is `time.monotonic`, and relying on it makes
+expiry tests flaky.

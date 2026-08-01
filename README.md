@@ -18,14 +18,30 @@ uv run python run_emulator.py
 The last command boots the emulated device, uploads and starts `app/main.lua`,
 sends it a few messages, and writes `framebuffer.png`.
 
+## Notification mirror
+
+The first real app. The host follows a source, keeps a rolling window of recent
+notifications, and pushes a prepared screen to the glasses.
+
+```bash
+uv run python run_notify.py                           # scripted demo
+uv run python run_notify.py --file /var/log/syslog --duration 20
+uv run python run_notify.py --command "journalctl -f -n0"
+```
+
+Notifications wrap to the display width, carry a relative age label, expire
+after `--ttl` seconds, and scroll oldest-first once the screen is full. All of
+that happens host-side; `app/notify.lua` only draws what it is handed.
+
 ## Layout
 
 | Path | What it is |
 |---|---|
-| `app/main.lua` | The Lua app that runs on the glasses |
-| `src/halo_host/` | Host-side driver: app lifecycle and messaging |
+| `app/main.lua` | Minimal echo app, used by the smoke tests |
+| `app/notify.lua` | Notification mirror renderer |
+| `src/halo_host/` | Host-side driver: app lifecycle, messaging, notifications |
 | `src/halo_emulator/` | Experimental emulator: Lua VM, display, BLE stand-in |
-| `tests/test_smoke.py` | End-to-end smoke tests |
+| `tests/` | End-to-end and unit tests |
 
 ## Status
 
